@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<!--
+  Standalone widget for the Reference RAG API.
+
+  How to use it:
+  - Google Sites: Insert -> Embed -> Embed code, paste this whole file's
+    contents in. Sites runs it inside a sandboxed iframe, which is exactly
+    what mic/camera/file access needs anyway.
+  - Anywhere else: just open this file, or host it as a static page
+    (GitHub Pages, Netlify free tier, an S3 bucket, whatever -- it's one
+    dependency-free file).
+
+  First run: it will ask for your API base URL and API key, then remember
+  both in this browser via localStorage. Each open tab also gets its own
+  session id (sessionStorage) so it defaults to its own RAG collection
+  unless you name one explicitly in settings.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reference Tool</title>
+<style>
+  :root {
+    --bg: #0b0b0d;
+    --surface: #17141a;
+    --surface-2: #1f1a21;
+    --border: #2c2530;
+    --text: #f2eef1;
+    --muted: #a89aa3;
+    --accent: #9b4f72;      /* darkish pink with a hint of purple */
+    --accent-bright: #c17198;
+    --danger: #c1615f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px 0;
+    color: var(--text);
+  }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent-bright);
+    margin: 0 0 10px 0;
+  }
+  textarea, input[type="text"], input[type="email"], select {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    margin-bottom: 8px;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  label.small { font-size: 12px; color: var(--muted); display: block; margin: 6px 0 4px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-bright); }
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  button.secondary:hover { border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.recording { background: var(--danger); }
+  .toggle-row { display: flex; gap: 16px; margin-bottom: 8px; }
+  .toggle-row label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .result {
+    white-space: pre-wrap;
+    font-size: 14px;
+    line-height: 1.5;
+    background: var(--surface-2);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 10px;
+    border: 1px solid var(--border);
+  }
+  .sources { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .status { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .settings-link { font-size: 12px; color: var(--muted); text-decoration: underline; cursor: pointer; }
+  input[type="file"] { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Reference Tool</h1>
+  <div class="subtitle">Ask, transcribe, or look up a reference page. <span class="settings-link" onclick="openSettings()">settings</span></div>
+
+  <div class="card" id="settingsCard" style="display:none;">
+    <h2>Connection</h2>
+    <label class="small">API base URL</label>
+    <input type="text" id="apiBase" placeholder="https://your-deployed-host:8000" />
+    <label class="small">API key (only used once, to get a session token -- never stored)</label>
+    <input type="password" id="apiKey" placeholder="Enter to sign in this tab; leave blank to keep current session" />
+    <label class="small">Collection (optional -- leave blank for default reference)</label>
+    <input type="text" id="collection" placeholder="default_reference" />
+    <button onclick="saveSettings()">Save</button>
+    <div class="status" id="settingsStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>Ask</h2>
+    <div class="toggle-row">
+      <label><input type="checkbox" id="useReference" /> Use reference book (adds the keyword)</label>
+    </div>
+    <textarea id="askText" placeholder="Type a question. e.g. look at 1.1 and explain X"></textarea>
+    <div class="row">
+      <select id="askDelivery">
+        <option value="display">Display here</option>
+        <option value="email">Email me</option>
+      </select>
+      <input type="email" id="askEmail" placeholder="you@example.com" style="display:none; flex:1; margin:0;" />
+      <button onclick="doAsk()" id="askBtn">Ask</button>
+    </div>
+    <div class="status" id="askStatus"></div>
+    <div class="result" id="askResult" style="display:none;"></div>
+    <div class="sources" id="askSources"></div>
+  </div>
+
+  <div class="card">
+    <h2>Vision (reference pages only)</h2>
+    <div class="subtitle" style="margin-bottom:8px;">Looks only at a page you've already ingested into a collection -- no photo upload. Good for a diagram or figure on a specific page.</div>
+    <input type="text" id="visionCollection" placeholder="Collection (blank = this tab's default)" />
+    <input type="text" id="visionPage" placeholder="Page number, e.g. 42" />
+    <textarea id="visionPrompt" placeholder="What does the diagram on this page show?"></textarea>
+    <div class="row">
+      <button onclick="doVision()" id="visionBtn">Analyze page</button>
+    </div>
+    <div class="status" id="visionStatus"></div>
+    <div class="result" id="visionResult" style="display:none;"></div>
+  </div>
+
+  <div class="card">
+    <h2>Voice / Audio</h2>
+    <div class="row">
+      <button id="recBtn" onclick="toggleRecording()">Start recording</button>
+      <input type="file" id="audioFile" accept="audio/*" style="display:none;" />
+      <button class="secondary" onclick="document.getElementById('audioFile').click()">or upload a file</button>
+    </div>
+    <div class="status" id="audioStatus"></div>
+    <div class="result" id="audioResult" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function loadSettings() {
+  $('apiBase').value = localStorage.getItem('rag_api_base') || '';
+  $('collection').value = localStorage.getItem('rag_collection') || '';
+  // The real API key is intentionally never pre-filled or persisted -- see
+  // saveSettings(). This field is blank on every fresh page load by design.
+}
+
+async function saveSettings() {
+  const base = $('apiBase').value.trim().replace(/\/$/, '');
+  const enteredKey = $('apiKey').value.trim();
+  const statusEl = $('settingsStatus');
+  localStorage.setItem('rag_api_base', base);
+  localStorage.setItem('rag_collection', $('collection').value.trim());
+
+  if (!enteredKey) {
+    // No new key entered -- keep whatever session token this tab already has.
+    $('settingsCard').style.display = 'none';
+    return;
+  }
+  statusEl.textContent = 'Verifying...';
+  try {
+    const res = await fetch(base + '/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: enteredKey }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    // Only this short-lived token is kept, in sessionStorage (clears when the
+    // tab closes) -- the real API key you just typed is never written to any
+    // storage, only used for this one exchange call. See app/security.py.
+    sessionStorage.setItem('rag_session_token', data.token);
+    sessionStorage.setItem('rag_session_token_expires', String(data.expires_at));
+    $('apiKey').value = '';
+    statusEl.textContent = '';
+    $('settingsCard').style.display = 'none';
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+function openSettings() { $('settingsCard').style.display = 'block'; }
+function apiBase() { return localStorage.getItem('rag_api_base') || ''; }
+function collection() { return localStorage.getItem('rag_collection') || ''; }
+
+// Short-lived token from /session, not the real API key -- see saveSettings().
+// Returns '' if missing or expired, which ensureConfigured() treats as
+// "needs the key re-entered," rather than ever falling back to a stored key.
+function sessionToken() {
+  const token = sessionStorage.getItem('rag_session_token');
+  const expires = parseInt(sessionStorage.getItem('rag_session_token_expires') || '0', 10);
+  if (!token || Date.now() / 1000 > expires) return '';
+  return token;
+}
+
+function authHeaders() {
+  return { 'X-Session-Token': sessionToken() };
+}
+
+// One id per open tab (sessionStorage, not localStorage) -- gives each tab
+// its own default RAG collection automatically so ingesting different PDFs
+// in different tabs never collides. Explicitly naming a collection above
+// still overrides this, for sharing one on purpose.
+function sessionId() {
+  let id = sessionStorage.getItem('rag_session_id');
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+    sessionStorage.setItem('rag_session_id', id);
+  }
+  return id;
+}
+
+function ensureConfigured() {
+  if (!apiBase() || !sessionToken()) {
+    openSettings();
+    return false;
+  }
+  return true;
+}
+
+$('askDelivery').addEventListener('change', () => {
+  $('askEmail').style.display = $('askDelivery').value === 'email' ? 'block' : 'none';
+});
+
+async function doAsk() {
+  if (!ensureConfigured()) return;
+  const btn = $('askBtn');
+  const status = $('askStatus');
+  const resultBox = $('askResult');
+  const sourcesBox = $('askSources');
+  let message = $('askText').value.trim();
+  if (!message) return;
+  const keyword = 'REFERENCE BOOK:'; // must match RAG_KEYWORD in the server's .env
+  if ($('useReference').checked && !message.toUpperCase().includes(keyword)) {
+    message = keyword + ' ' + message;
+  }
+
+  btn.disabled = true; status.textContent = 'Working...'; resultBox.style.display = 'none'; sourcesBox.textContent = '';
+  try {
+    const res = await fetch(apiBase() + '/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        message,
+        collection: collection() || null,
+        session_id: sessionId(),
+        delivery: $('askDelivery').value,
+        email: $('askEmail').value.trim() || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    resultBox.textContent = data.answer;
+    resultBox.style.display = 'block';
+    if (data.sources && data.sources.length) {
+      sourcesBox.textContent = 'Sources: ' + data.sources.map(s => `p.${s.page ?? '?'} ${s.chapter ?? ''} ${s.section ?? ''}`.trim()).join(' | ');
+    }
+    status.textContent = data.delivered === 'displayed' ? '' : data.delivered;
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function doVision() {
+  if (!ensureConfigured()) return;
+  const page = parseInt($('visionPage').value, 10);
+  const prompt = $('visionPrompt').value.trim();
+  if (!page || !prompt) { $('visionStatus').textContent = 'Enter a page number and a question.'; return; }
+  const btn = $('visionBtn');
+  const status = $('visionStatus');
+  const resultBox = $('visionResult');
+
+  btn.disabled = true; status.textContent = 'Working...'; resultBox.style.display = 'none';
+  try {
+    const res = await fetch(apiBase() + '/vision/page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        page,
+        prompt,
+        collection: $('visionCollection').value.trim() || collection() || null,
+        session_id: sessionId(),
+        delivery: 'display',
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    resultBox.textContent = data.answer;
+    resultBox.style.display = 'block';
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+let mediaRecorder = null;
+let audioChunks = [];
+
+async function toggleRecording() {
+  const btn = $('recBtn');
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      btn.textContent = 'Start recording';
+      btn.classList.remove('recording');
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      await uploadAudio(new File([blob], 'recording.webm', { type: 'audio/webm' }));
+    };
+    mediaRecorder.start();
+    btn.textContent = 'Stop recording';
+    btn.classList.add('recording');
+  } catch (e) {
+    $('audioStatus').textContent = 'Microphone access denied or unavailable: ' + e.message;
+  }
+}
+
+$('audioFile').addEventListener('change', () => {
+  const file = $('audioFile').files[0];
+  if (file) uploadAudio(file);
+});
+
+async function uploadAudio(file) {
+  if (!ensureConfigured()) return;
+  const status = $('audioStatus');
+  const resultBox = $('audioResult');
+  status.textContent = 'Transcribing (can take a bit for longer audio)...';
+  resultBox.style.display = 'none';
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('delivery', 'display');
+    const res = await fetch(apiBase() + '/transcribe', { method: 'POST', headers: authHeaders(), body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    resultBox.textContent = 'SUMMARY\n' + data.summary + '\n\nNOTES\n' + data.notes.map(n => '- ' + n).join('\n') + '\n\nTRANSCRIPT\n' + data.transcript;
+    resultBox.style.display = 'block';
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  }
+}
+
+loadSettings();
+if (!apiBase() || !sessionToken()) openSettings();
+</script>
+</body>
+</html>
