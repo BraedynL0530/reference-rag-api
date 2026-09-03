@@ -1,0 +1,11 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+data/
+frontend/
+CONTINUATION_PROMPT.md
+README.md
+credentials.json
+token.json
