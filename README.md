@@ -106,13 +106,30 @@ only lines that should need touching.
 1. Create a project at https://supabase.com (free tier: 500MB Postgres,
    pgvector included, pauses after 7 days idle — fine for personal use,
    ping `/health` on a schedule if you want to keep it warm).
-2. Project Settings → Database → Connection string → URI. Use the
-   **Session pooler** connection (built for exactly this short-lived,
-   many-cold-starts pattern), paste it into `.env` → `DATABASE_URL`.
+2. Project Settings → Database → Connect → **Session pooler** tab (not
+   *Direct connection* — that one is IPv6-only and will fail with
+   `Network is unreachable` on Render/Railway/most hosts that don't route
+   IPv6 outbound). Copy that URI whole into `.env` → `DATABASE_URL` — the
+   pooler connection uses a different username format
+   (`postgres.<project-ref>`) than direct connection, so copy it fresh
+   rather than hand-editing an old direct-connection string.
 3. That's it — `app/rag/db.py` creates the `vector` extension and both
    tables itself on first startup (`init_schema()`, idempotent, runs from
    `main.py`'s lifespan handler). Nothing to run manually in the Supabase
    SQL editor.
+
+   One thing `init_schema()` handles automatically that's worth knowing
+   about: Supabase commonly installs pgvector into a dedicated
+   `extensions` schema rather than `public` (either by default on newer
+   projects, or if pgvector was ever toggled on manually via the
+   dashboard before this app's first boot). `CREATE EXTENSION IF NOT
+   EXISTS` is a no-op if it's already installed anywhere in the cluster,
+   so this app discovers the actual schema at startup and schema-qualifies
+   every reference to the `vector` type and its `<=>` operator accordingly
+   — confirmed necessary against a real Supabase-shaped database, not
+   theoretical: relying on `public` (or even `SET search_path`, which
+   doesn't reliably survive asyncpg's connection-pool reuse) breaks with
+   `unknown type: public.vector` or `operator does not exist` otherwise.
 
 ## 3. Run it
 

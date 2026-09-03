@@ -51,14 +51,20 @@ async def add_chunks(collection: str, chunk_records: list[dict], embeddings: lis
 
 async def query(collection: str, query_embedding: list[float], top_k: int) -> list[dict]:
     pool = await db.get_pool()
+    # Both the type cast AND the operator itself need explicit schema
+    # qualification -- confirmed empirically that even with matching
+    # operand types, a bare `<=>` still fails to resolve once pgvector
+    # lives outside `public` (see db.py's module docstring).
+    vtype = db.vector_type()
+    op = db.cosine_distance_op()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT text, page, chapter, section, source_file,
-                   embedding <=> $1 AS distance
+                   embedding {op} $1::{vtype} AS distance
             FROM reference_chunks
             WHERE collection = $2
-            ORDER BY embedding <=> $1
+            ORDER BY embedding {op} $1::{vtype}
             LIMIT $3
             """,
             query_embedding,
