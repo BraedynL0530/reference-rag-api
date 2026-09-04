@@ -138,7 +138,7 @@ def _safe_filename(title: str) -> str:
     return slug[:80]
 
 
-@app.get("/health")
+@app.route("/health", methods=["GET", "HEAD"])
 async def health() -> dict:
     return {"status": "ok"}
 
